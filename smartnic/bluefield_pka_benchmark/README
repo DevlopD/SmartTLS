@@ -1,0 +1,12 @@
+PKA (Public-key Accelerator) can only be used in Mellanox BlueField.
+PKA library and openssl is necessery.
+
+To build and install pka library into SmartNIC. Please refer <bluefield software package>/pkalib-1.0/README.
+
+benchmark_example evaluate PKA performance. It is similar with benchmark provided by BlueField software package, located in pkalib-1.0/tests/.
+
+openssl_example measure embedded ARM core to perform Public key operation.
+
+note: If you want to evaluate benchmark with multiple process, you should set PKA_RING_CNT as 2 or 1.
+      BlueField SmartNIC has only 4 I/O block (= 4 window RAMs), where each is partitioned into 4 rings.
+      Each I/O block cannot be shared between processes, so you cannot scale out processes exceeding 4.
