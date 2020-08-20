@@ -71,9 +71,9 @@ Enter dpdk/config/common_base, and change CONFIG_RTE_LIBRTE_MLX5_PMD to 'y'
 $ ./setup_linux_env.sh
 ```
 
-	- Press [15] to build target x86_64-native-linuxapp-gcc
-	- Press [21] or [22] to setup 4096 2MB hugepages
-	- Press [35] to exit the script
+- Press [15] to build target x86_64-native-linuxapp-gcc
+- Press [21] or [22] to setup 4096 2MB hugepages
+- Press [35] to exit the script
 
 3. Set RTE_SDK and RTE_TARGET environment variables
 
@@ -130,9 +130,9 @@ $ tar -xvf dpdk-19.05.tar.xz
 $ ./<dpdk_directory>/usertools/dpdk-setup.sh
 ```
 
-	- Build target arm64-bluefield-linux-gcc
-	- Setup 16 512MB huge pages (SmartNIC use 512MB as default)
-	- Exit the script
+- Build target arm64-bluefield-linux-gcc
+- Setup 16 512MB huge pages (SmartNIC use 512MB as default)
+- Exit the script
 
 3. Set RTE_SDK and RTE_TARGET environment variables
 
@@ -161,8 +161,8 @@ $ ./build/ssloff -c <core_mask> -n 4 -- -m <max_conn>
 (e.g. ./build/ssloff -c ff -n 4 -b 03:00.1 -- -m 32768)
 ```
 
-	- core_mask should be 2^k.
-	- max_conn means hard limit of TLS handshakes that SmartNIC can concurrently handle.
+- core_mask should be 2^k.
+- max_conn means hard limit of TLS handshakes that SmartNIC can concurrently handle.
 
 You can configure actual threshold to convert opportunistic offload at tcp.c. concurrent connections more than UPPER_BOUND trigger the SmartNIC does not process handshake offload, and lower than LOWER_BOUND make SmartNIC return its state.
 
@@ -175,7 +175,7 @@ $ ./ssl_server -p <storage_directory> -f epserver.conf -N <core_num>
 (e.g. ./ssl_server -p www -f epserver.conf -N 8)
 ```
 
-	- mTCP loads all files at storage_directory to main memory to serve them quickly. Please do not put too heavy files exceeding your RAM capacity.
+- mTCP loads all files at storage_directory to main memory to serve them quickly. Please do not put too heavy files exceeding your RAM capacity.
 
 ## Notes
 
