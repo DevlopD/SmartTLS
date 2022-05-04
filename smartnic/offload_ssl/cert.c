@@ -151,4 +151,3 @@ cert_load_key(ssl_context_t* ctx)
     }
     return 0;
 }
-

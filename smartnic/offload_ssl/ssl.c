@@ -187,6 +187,28 @@ state_to_string(int state)
 }
 #endif /* VERBOSE_STATE */
 
+static inline void
+set_u32(uint24_t* a, const uint32_t* b)
+{
+    const uint8_t* y = (const uint8_t *)b;
+    a->u8[0] = y[2];
+    a->u8[1] = y[1];
+    a->u8[2] = y[0];
+}
+
+static inline uint32_t
+get_u32(uint24_t a)
+{
+    uint32_t x;
+    x = a.u8[0];
+    x = x << 8;
+    x |= a.u8[1];
+    x = x << 8;
+    x |= a.u8[2];
+
+    return x;
+}
+
 /*
  * This function changes string to operand.
  * 
@@ -389,18 +411,19 @@ static inline cipher_suite_t
 select_cipher(uint16_t length, cipher_suite_t* cipher_suites)
 {
     cipher_suite_t cipher = TLS_NULL_WITH_NULL_NULL;
+	uint32_t i;
 
-    for (unsigned i = 0; i< length / sizeof(cipher_suite_t); i++) {
-		/* debug */
-        if (COMPARE_CIPHER(cipher_suites[i], TLS_RSA_WITH_AES_256_CBC_SHA)) {
+    for (i = 0; i< length / sizeof(cipher_suite_t); i++) {
+		/* /\* debug *\/ */
+        /* if (COMPARE_CIPHER(cipher_suites[i], TLS_RSA_WITH_AES_128_GCM_SHA256)) { */
+        /*     return TLS_RSA_WITH_AES_128_GCM_SHA256; */
+        /* } */
+
+		if (COMPARE_CIPHER(cipher_suites[i], TLS_RSA_WITH_AES_256_GCM_SHA384)) {
+            return TLS_RSA_WITH_AES_256_GCM_SHA384;
+        } else if (COMPARE_CIPHER(cipher_suites[i], TLS_RSA_WITH_AES_256_CBC_SHA)) {
             return TLS_RSA_WITH_AES_256_CBC_SHA;
         }
-
-		/* if (COMPARE_CIPHER(cipher_suites[i], TLS_RSA_WITH_AES_256_GCM_SHA384)) { */
-        /*     return TLS_RSA_WITH_AES_256_GCM_SHA384; */
-        /* } else if (COMPARE_CIPHER(cipher_suites[i], TLS_RSA_WITH_AES_256_CBC_SHA)) { */
-        /*     return TLS_RSA_WITH_AES_256_CBC_SHA; */
-        /* } */
     }
     return cipher;
 }
@@ -545,10 +568,10 @@ store_handshake(struct ssl_session* sess, record_t *record)
                     record->plain_text.length,
                     sess->handshake_msgs_len,
                     record->fragment.handshake.msg_type);
-
-    fprintf(stderr, "\nfragment:\n\n");
+    fprintf(stderr, "fragment:\n");
     {
-        for (unsigned z = 0; z < record->plain_text.length; z++)
+		unsigned z;
+        for (z = 0; z < record->plain_text.length; z++)
             fprintf(stderr, "%02X%c",
                     *((uint8_t *)(record->plain_text.fragment) + z),
                     ((z + 1) % 16) ? ' ' : '\n');
@@ -834,6 +857,10 @@ process_crypto(struct thread_context* ctx)
 
         op = (ssl_crypto_op_t *)(ctx->rsa_result->user_data);
         record = (record_t *)(op->data);
+		if(!record) {
+			/* DEBUG_PRINT("[process crypto] record is null..\n"); */
+			return -1;
+		}
         sess = (struct ssl_session *)(record->sess);
 
 		/* it may be already rotten */
@@ -1189,7 +1216,8 @@ encrypt_record(struct ssl_session* sess, record_t* record)
 #if VERBOSE_AES
 		fprintf(stderr, "\ndecrypted:\n");
 		{
-			for (unsigned z = 0; z < 64; z++)
+			unsigned z;
+			for (z = 0; z < 64; z++)
 				fprintf(stderr, "%02X%c", record->decrypted[z],
 						((z + 1) % 16) ? ' ' : '\n');
 		}
@@ -1229,7 +1257,8 @@ encrypt_record(struct ssl_session* sess, record_t* record)
 #if VERBOSE_AES
 		fprintf(stderr, "\nRevised decrypted:\n");
 		{
-			for (unsigned z = 0; z < 80; z++)
+			unsigned z;
+			for (z = 0; z < 80; z++)
 				fprintf(stderr, "%02X%c", record->decrypted[z],
 						((z + 1) % 16) ? ' ' : '\n');
 		}
@@ -1257,7 +1286,8 @@ encrypt_record(struct ssl_session* sess, record_t* record)
 #if VERBOSE_AES
 		fprintf(stderr, "\nEncrypted Data with Total Length %lu\n", record->length);
 		{
-			for (unsigned z = 0; z < 80; z++)
+			unsigned z;
+			for (z = 0; z < 80; z++)
 				fprintf(stderr, "%02X%c", record->data[z],
 						((z + 1) % 16) ? ' ' : '\n');
 		}
@@ -1469,8 +1499,9 @@ unpack_record(record_t* record)
 
     if (likely(plain_text->version.major == 0x03))
         plain_text->fragment = decrypted + RECORD_HEADER_SIZE;
-    else
+    else {
         assert(0);
+	}
 
     c_type = plain_text->c_type;
 
@@ -1932,10 +1963,34 @@ send_record(struct ssl_session* sess, record_t* record,
                 return -1;
         }
 
+#if OFFLOAD_AES_GCM
+		/* ToDo: insert information on AES offload into mbuf? */
+
+		/* It only consider handshake packet,
+		   so please rethink when processing app data here */
+		if (send_type == PKT_TYPE_OFFL_TLS_AES && 
+			sess->pending_sp.cipher_type == AEAD) {
+			int add_len = sess->write_sp.record_iv_length + GCM_TAG_SIZE;
+			record->data = record->decrypted;
+			record->data -= sess->write_sp.record_iv_length;
+			memcpy(record->data, record->decrypted, RECORD_HEADER_SIZE);
+			record->data[4] += add_len;
+			memset(record->data + RECORD_HEADER_SIZE, 0,
+				   sess->write_sp.record_iv_length);
+			record->length += add_len;
+			record->state = WRITE_READY;
+		} else {
+			record->state = TO_ENCRYPT;
+			if(encrypt_record(sess, record) < 0) {
+				return -1;
+			}
+		}
+#else
 		record->state = TO_ENCRYPT;
         if(encrypt_record(sess, record) < 0) {
             return -1;
         }
+#endif
     } else {
         record->data = record->decrypted;
         record->state = WRITE_READY;
@@ -1944,7 +1999,8 @@ send_record(struct ssl_session* sess, record_t* record,
 #if VERBOSE_CHUNK
     fprintf(stderr, "\nSending Payload\n");
     {
-        for (unsigned z = 0; z < record->length; z++)
+		unsigned z;
+        for (z = 0; z < record->length; z++)
         fprintf(stderr, "%02X%c", *((uint8_t *)record->data + z),
                         ((z + 1) % 16) ? ' ' : '\n');
     }
@@ -1958,8 +2014,19 @@ send_record(struct ssl_session* sess, record_t* record,
     if (send_type) {
 		ret = -1;
         while (ret < 0) {
+#if OFFLOAD_AES_GCM
+			if (send_type == PKT_TYPE_OFFL_TLS_AES) {
+				ret = send_tcp_packet(sess->parent, sess->send_buffer,
+							  sess->send_buffer_offset, TCP_FLAG_ACK, 
+							  TCP_OFFL_TSO | TCP_OFFL_TLS_AES);
+			} else {
+				ret = send_tcp_packet(sess->parent, sess->send_buffer,
+							  sess->send_buffer_offset, TCP_FLAG_ACK, 0);
+			}
+#else
             ret = send_tcp_packet(sess->parent, sess->send_buffer,
-                                  sess->send_buffer_offset, TCP_FLAG_ACK);
+                                  sess->send_buffer_offset, TCP_FLAG_ACK, 0);
+#endif
 
             if (unlikely(ret < 0))
                 fprintf(stderr, "\nSending Payload failed, len: %d\n",
@@ -2107,11 +2174,19 @@ int send_change_cipher_spec(struct ssl_session* sess)
     length +=
         sizeof(change_cipher_spec->fragment.change_cipher_spec.type);
 
+#if OFFLOAD_AES_GCM
+    ret = send_record(sess,
+					  change_cipher_spec,
+					  CHANGE_CIPHER_SPEC,
+					  length,
+					  PKT_TYPE_FINISH);
+#else
     ret = send_record(sess,
                       change_cipher_spec,
                       CHANGE_CIPHER_SPEC,
                       length,
                       PKT_TYPE_NONE);
+#endif
     if (unlikely(0 > ret)) {
         fprintf(stderr, "send_record for change_cipher_spec failed.\n");
         return -1;
@@ -2144,11 +2219,27 @@ int send_server_finish(struct ssl_session *sess, uint8_t *digest)
     length += FINISH_DIGEST_SIZE;
 
     /* There is only FINISHED (20), actually */
+#if OFFLOAD_AES_GCM
+	if(sess->is_offl_aead) {
+		ret = send_handshake(sess,
+							 server_finished,
+							 CLIENT_FINISHED,
+							 length,
+							 PKT_TYPE_OFFL_TLS_AES);
+	} else {
+		ret = send_handshake(sess,
+							 server_finished,
+							 CLIENT_FINISHED,
+							 length,
+							 PKT_TYPE_FINISH);
+	}
+#else
     ret = send_handshake(sess,
                          server_finished,
                          CLIENT_FINISHED,
                          length,
                          PKT_TYPE_FINISH);
+#endif
     if (unlikely(0 > ret)) {
         fprintf(stderr, "send_handshake for server_finished failed.\n");
         exit(EXIT_FAILURE);
@@ -2196,29 +2287,7 @@ handle_handshake(struct ssl_session* sess, record_t* record)
                                        client_hello->cipher_suites);
 				pending_sp->cipher = cipher;
 
-                if (COMPARE_CIPHER(cipher, TLS_RSA_WITH_AES_256_CBC_SHA)) {
-                    pending_sp->entity = SERVER;
-                    pending_sp->prf_algorithm = PRF_SHA256;
-                    pending_sp->bulk_cipher_algorithm = AES;
-                    pending_sp->cipher_type = BLOCK;
-                    pending_sp->enc_key_size = 32;
-                    pending_sp->block_length = 16; /* Actually, not used */
-                    pending_sp->fixed_iv_length = 16;
-                    pending_sp->record_iv_length = 16; /* Actually, not used */
-                    pending_sp->mac_length = 16; /* Actually, not used */
-                    pending_sp->mac_key_size = 20;
-                    pending_sp->mac_algorithm = MAC_SHA1;
-                    pending_sp->compression_algorithm = NO_COMP;
-
-                    memcpy(pending_sp->client_random,
-                           &(client_hello->random),
-                           sizeof(pending_sp->client_random));
-
-                    uint32_t now = time(NULL);
-                    memcpy(pending_sp->server_random, &now, sizeof(uint32_t));
-                    init_random(sess, (pending_sp->server_random) + sizeof(uint32_t),
-                                sizeof(pending_sp->server_random) - sizeof(uint32_t));
-                } else if (COMPARE_CIPHER(cipher, TLS_RSA_WITH_AES_256_GCM_SHA384)) {
+				if (COMPARE_CIPHER(cipher, TLS_RSA_WITH_AES_256_GCM_SHA384)) {
                     pending_sp->entity = SERVER;
                     pending_sp->prf_algorithm = PRF_SHA384;
                     pending_sp->bulk_cipher_algorithm = AES;
@@ -2230,6 +2299,28 @@ handle_handshake(struct ssl_session* sess, record_t* record)
                     pending_sp->mac_length = 48; /* not used? */
                     pending_sp->mac_key_size = 48;
                     pending_sp->mac_algorithm = MAC_SHA384;
+                    pending_sp->compression_algorithm = NO_COMP;
+
+                    memcpy(pending_sp->client_random,
+                           &(client_hello->random),
+                           sizeof(pending_sp->client_random));
+
+                    uint32_t now = time(NULL);
+                    memcpy(pending_sp->server_random, &now, sizeof(uint32_t));
+                    init_random(sess, (pending_sp->server_random) + sizeof(uint32_t),
+                                sizeof(pending_sp->server_random) - sizeof(uint32_t));
+                } else if (COMPARE_CIPHER(cipher, TLS_RSA_WITH_AES_256_CBC_SHA)) {
+                    pending_sp->entity = SERVER;
+                    pending_sp->prf_algorithm = PRF_SHA256;
+                    pending_sp->bulk_cipher_algorithm = AES;
+                    pending_sp->cipher_type = BLOCK;
+                    pending_sp->enc_key_size = 32;
+                    pending_sp->block_length = 16; /* Actually, not used */
+                    pending_sp->fixed_iv_length = 16;
+                    pending_sp->record_iv_length = 16; /* Actually, not used */
+                    pending_sp->mac_length = 16; /* Actually, not used */
+                    pending_sp->mac_key_size = 20;
+                    pending_sp->mac_algorithm = MAC_SHA1;
                     pending_sp->compression_algorithm = NO_COMP;
 
                     memcpy(pending_sp->client_random,
@@ -2488,7 +2579,8 @@ handle_handshake(struct ssl_session* sess, record_t* record)
 #if VERBOSE_CHUNK
             fprintf(stderr, "\nHandshake Chunk\n");
             {
-                for (int z = 0; z < sess->handshake_msgs_len -
+				int z;
+                for (z = 0; z < sess->handshake_msgs_len -
                                     record->plain_text.length; z++)
                     fprintf(stderr, "%02X%c", sess->handshake_msgs[z],
                                     ((z + 1) % 16) ? ' ' : '\n');
@@ -2502,7 +2594,6 @@ handle_handshake(struct ssl_session* sess, record_t* record)
                     fprintf(stderr, "%02X%c", verify_handshake[z],
                                     ((z + 1) % 16) ? ' ' : '\n');
             }
-
 
             fprintf(stderr, "\nMy Handshake Verify\n");
             {
@@ -2550,6 +2641,39 @@ handle_handshake(struct ssl_session* sess, record_t* record)
             memcpy(write_sp, pending_sp, sizeof(*pending_sp));
             sess->send_seq_num_ = 0;
             sess->server_write_IV_seq_num = 0;
+
+#if OFFLOAD_AES_GCM
+			/* Add tls_ctx on established session */
+			if (COMPARE_CIPHER(sess->write_sp.cipher, 
+							   TLS_RSA_WITH_AES_256_GCM_SHA384)) {
+				sess->is_offl_aead = 1;
+				sess->tls_ctx.tls_version[0] = 3;
+				sess->tls_ctx.tls_version[1] = 3;
+				/**< TLS v1.2 */
+				sess->tls_ctx.cipher_suite = 0x009d;
+				/**< TLS_RSA_WITH_AES_256_GCM_SHA384 */
+				sess->tls_ctx.aead_key.key_size = 32;
+				sess->tls_ctx.aead_key.key = sess->server_write_key;
+				sess->tls_ctx.aead_key.iv_size = 4; /* implicit */
+				sess->tls_ctx.aead_key.server_write_iv =
+					sess->server_write_IV;
+				sess->tls_ctx.next_record_num = 0;
+				sess->tls_ctx.next_tcp_seq = sess->parent->next_sent_seq;
+				sess->tls_ctx.is_ooo = 1;
+
+				/* create tls dev for this session key */
+				if (rte_eth_tls_device_create(
+							  sess->parent->portid, &sess->tls_ctx) < 0) {
+					DEBUG_PRINT("can't create tls_dev!\n");
+					exit(EXIT_FAILURE);
+				}
+
+				/* DEBUG_PRINT("[core %u] create tls_dev!\n",  */
+				/* 			rte_lcore_id()); */
+			}
+			/* /\* debug *\/ */
+			/* exit(EXIT_FAILURE); */
+#endif
 
             /* Make Server Finish */
             int server_finish_len;
@@ -2876,10 +3000,14 @@ process_read_record(struct ssl_session* sess, record_t* record)
 {
     assert(record != NULL);
 
+#if VERBOSE_SSL
+	fprintf(stderr, "[PROCESS READ RECORD]\n");
+#endif
 #if VERBOSE_CHUNK
     fprintf(stderr,"\nNew READ RECORD\n");
     {
-        for (unsigned z = 0; z < record->length; z++)
+		unsigned z;
+        for (z = 0; z < record->length; z++)
             fprintf(stderr, "%02X%c", record->data[z],
                                 ((z + 1) % 16) ? ' ' : '\n');
     }
@@ -2940,7 +3068,7 @@ process_new_record(struct ssl_session* sess, uint8_t *buf, size_t len)
     uint16_t record_len = 0;
 
 #if VERBOSE_SSL
-    fprintf(stderr, "[Process New Record]\n");
+    fprintf(stderr, "\n[Process New Record]\n");
 #endif /* VERBOSE_SSL */
     crr = sess->current_read_record;
 
@@ -2959,36 +3087,68 @@ process_new_record(struct ssl_session* sess, uint8_t *buf, size_t len)
 
             record_len = ntohs(*(uint16_t *)(ph + 3));
 #if VERBOSE_SSL
+			uint8_t record_type;
+            record_type = *ph;
             fprintf(stderr, "\nNew RECORD Session %d: "
-                            "%d, processed: %lu, record_len: %u\n",
-                            sess->parent->session_id, crr->id,
-                            processed_len, ntohs(*(uint16_t *)(ph + 3)));
+					"%d, processed: %lu, record type: %u, len: %u\n",
+					sess->parent->session_id, crr->id,
+					processed_len, record_type, record_len);
             {
-                for (unsigned z = 0; z < 64; z++)
+				unsigned z;
+                for (z = 0; z < 64; z++)
                     fprintf(stderr, "%02X%c", ph[z],
                                     ((z + 1) % 16) ? ' ' : '\n');
             }
 #endif /* VERBOSE_SSL */
-            assert(record_len < 16384 +2048);
+            assert(record_len < 16384+2048);
             crr->length = record_len + RECORD_HEADER_SIZE;
         }
 
-        copy_len = MIN(crr->length - crr->current_len, len - processed_len);
+#if ZERO_COPY_RECV
+		/* selectively copy packet between TCP-TLS */
+		if (crr->current_len > 0 ||
+			crr->length > len - processed_len ||
+			sess->waiting_crypto ||
+			sess->handshake_state == SERVER_HELLO_DONE) {
+
+			copy_len = MIN(crr->length - crr->current_len,
+						   len - processed_len);
+			memcpy(crr->data + crr->current_len,
+				   buf + processed_len, copy_len);
+			crr->current_len += copy_len;
+			processed_len += copy_len;
+		} else {
+			crr->data = buf + processed_len;
+			crr->current_len += crr->length;
+			processed_len += crr->length;
+		}
+#else  /* ZERO_COPY_RECV */
+		copy_len = MIN(crr->length - crr->current_len,
+					   len - processed_len);
+		memcpy(crr->data + crr->current_len, buf + processed_len, copy_len);
+		crr->current_len += copy_len;
+		processed_len += copy_len;
+#endif /* !ZERO_COPY_RECV */
+
 #if VERBOSE_SSL
         fprintf(stderr, "crr->length: %lu, crr->current_len: %lu, "
                         "len: %lu, processed_len: %lu\n",
                         crr->length, crr->current_len, len, processed_len);
 #endif /* VERBOSE_SSL */
 
-        memcpy(crr->data + crr->current_len, buf + processed_len, copy_len);
-        crr->current_len += copy_len;
-        processed_len += copy_len;
-
         if (crr->current_len == crr->length) {
+#if MODIFY_FLAG
+			if (sess->waiting_crypto)
+				push_read_record(sess, crr);
+			else
+				process_read_record(sess, crr);
+#else
             push_read_record(sess, crr);
+#endif
+			
             sess->current_read_record = NULL;
             crr = NULL;
-        }
+        } 
     }
 
     /* We need next packet */
@@ -3004,7 +3164,7 @@ process_ssl_packet(struct tcp_session* tcp_sess,
                  uint8_t *payload, uint16_t payloadlen)
 {
     struct ssl_session *ssl_sess = tcp_sess->ssl_session;
-    if (!ssl_sess || !payload || payloadlen <= 0)
+    if (!ssl_sess || !payload || payloadlen == 0)
         return -1;
 
 #if VERBOSE_SSL

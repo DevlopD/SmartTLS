@@ -33,8 +33,9 @@
 #include "host.h"
 #endif /* ONLOAD */
 
-#define RX_RING_SIZE        1024
-#define TX_RING_SIZE        1024
+#if USE_TC_RULE
+#include "tc.h"
+#endif
 
 #define RTE_TEST_RX_DESC_DEFAULT 128
 #define RTE_TEST_TX_DESC_DEFAULT 128
@@ -71,6 +72,10 @@
 #define TCP_FLAG_PSH        0x08
 #define TCP_FLAG_ACK        0x10
 
+/* TCP Send Offload Flags */
+#define TCP_OFFL_TSO        0x01
+#define TCP_OFFL_TLS_AES    0x02
+
 #define SSL_PORT            443
 
 #define htonll(x)   ((((uint64_t)htonl(x)) << 32) + htonl(x >> 32))
@@ -78,12 +83,12 @@
 
 #ifdef MIN
 #else
-#define MIN(x, y)   ((x) < (y) ? (x) : (y))
+#define MIN(x, y)   ((int32_t)((x)-(y)) < 0 ? (x) : (y))
 #endif
 
 #ifdef MAX
 #else
-#define MAX(x, y)   ((x) > (y) ? (x) : (y))
+#define MAX(x, y)   ((int32_t)((x)-(y)) > 0 ? (x) : (y))
 #endif
 
 #define ALIGN(x, a) (((x) + (a) - 1) & ~((a) - 1))
@@ -140,6 +145,9 @@ enum packet_type {
     PKT_TYPE_NONE,
     PKT_TYPE_HELLO,
     PKT_TYPE_FINISH,
+#if OFFLOAD_AES_GCM
+    PKT_TYPE_OFFL_TLS_AES,
+#endif
 };
 
 struct ssl_session {
@@ -152,6 +160,11 @@ struct ssl_session {
     struct thread_context* ctx;
     struct tcp_session* parent;
     record_t *current_read_record;
+
+#if OFFLOAD_AES_GCM
+	uint8_t is_offl_aead;
+	struct rte_eth_tls_ctx tls_ctx;
+#endif
 
     protocol_version_t  version;
 
@@ -222,9 +235,19 @@ struct tcp_session {
     uint32_t        last_sent_ack;
     uint32_t        last_sent_len;
 
+#if OFFLOAD_AES_GCM
+    uint32_t        next_sent_seq;
+#endif
+
     uint32_t        total_sent;
 
     uint16_t        window;
+
+#if USE_TC_RULE
+	struct tc_flower tc_obj;
+	struct tc_flower tc_rev_obj; /* reversed rule */
+	uint16_t tc_prio;
+#endif
 
     struct ssl_session *ssl_session;
     TAILQ_ENTRY(tcp_session) active_session_link;
@@ -270,6 +293,10 @@ struct thread_context {
     int using_op_cnt;
 
     int decrease;
+
+#if USE_TC_RULE
+	uint16_t tc_rule_cnt;
+#endif
 
     TAILQ_HEAD(record_trace_head, record) whole_record;
     TAILQ_HEAD(op_trace_head, ssl_crypto_op) whole_op;
@@ -357,7 +384,7 @@ send_meta_packet(int coreid, int port, struct tcp_session *sess,
 
 int
 send_tcp_packet(struct tcp_session *sess, uint8_t *payload,
-                uint16_t len, uint8_t flags);
+                uint16_t len, uint8_t flags, uint8_t offl_flags);
 
 /*--------------------------------------------------------------------------*/
 /* dpdk_io.c */
@@ -372,6 +399,11 @@ get_rptr(uint16_t core_id, uint16_t port, int index, uint16_t *len);
 
 int
 send_pkts(uint16_t core_id, uint16_t port);
+
+#if OFFLOAD_AES_GCM
+struct rte_mbuf *
+get_wmbuf(uint16_t core_id, uint16_t port, uint16_t pktsize);
+#endif
 
 uint8_t *
 get_wptr(uint16_t core_id, uint16_t port, uint16_t pktsize);

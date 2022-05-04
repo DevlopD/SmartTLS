@@ -1,0 +1,18 @@
+README
+
+How to use
+  ./tc_test -h
+
+when use mode 0 or 1:
+  make -j 15
+  ./script/tc_rule_flower.sh
+  ./tc_test 0 or ./tc_test 1
+
+when use mode 2:
+  make -j 15
+  ./script/tc_rule_reset.sh
+  ./tc_test 2 [interval]
+
+Note
+  The application compile is tested with gcc 4.8.5 only. I found that it cannot be compiled with gcc 5.4.0
+

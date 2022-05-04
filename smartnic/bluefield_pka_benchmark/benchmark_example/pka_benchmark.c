@@ -276,12 +276,21 @@ GetRSAKeyPair(char *pem_filename)
 		exit(0);
 	}
 
+	/* debug */
+	fprintf(stderr, "check1\n");
+
 	rsa_private_key = PEM_read_PrivateKey(fp_pem, NULL, NULL, NULL);
 
-	if(rsa_private_key->pkey.rsa == NULL) {
+	/* debug */
+	fprintf(stderr, "check2\n");
+
+	if(rsa_private_key == NULL || rsa_private_key->pkey.rsa == NULL) {
 		perror("PEM_READ");
 		exit(0);
 	}
+
+	/* debug */
+	fprintf(stderr, "check3\n");
 
 	fclose(fp_pem);
 

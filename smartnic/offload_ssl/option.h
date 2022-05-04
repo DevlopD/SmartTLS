@@ -15,6 +15,8 @@
 #define VERBOSE_DATA        FALSE
 #define VERBOSE_STAT        TRUE
 
+#define DEBUG_PRINT(fmt, args...) fprintf(stderr, ""fmt"", ##args)
+
 #define UNUSED(x)           (void)(x)
 
 #ifndef TRUE
@@ -38,8 +40,13 @@
 #undef dmb
 #endif /* dmb */
 
-#define ONLOAD                           1
+/* optimizations */
+#define ONLOAD                           0
+#define ZERO_COPY_RECV                   1
+#define OFFLOAD_AES_GCM                  0
 #define USE_HASHTABLE_FOR_ACTIVE_SESSION 1
+#define USE_TC_RULE                      1
+
 #define MODIFY_FLAG                      1
 #define DEBUG_FLAG                       0
 #define CRYPTO_GETTIME_FLAG FALSE
@@ -56,8 +63,8 @@
 #include "pka_helper.h"
 
 /* debug */
-#define PKA_RING_CNT 4
 /* #define PKA_RING_CNT 4 */
+#define PKA_RING_CNT 8
 #define PKA_QUEUE_CNT 16
 #define PKA_MAX_OBJS 32
 /* note: Maximum queue size should not exceed 8MB (= PKA_QUEUE_MASK_SIZE).

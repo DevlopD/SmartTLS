@@ -8,7 +8,7 @@
 static struct rte_eth_conf port_conf = {
     .rxmode = {
         .mq_mode        =   ETH_MQ_RX_RSS,
-        .max_rx_pkt_len =   ETHER_MAX_LEN,
+        .max_rx_pkt_len =   RTE_ETHER_MAX_LEN,
 #if RTE_VERSION > RTE_VERSION_NUM(17, 8, 0, 0)
         .offloads       =   (
 #if RTE_VERSION < RTE_VERSION_NUM(18, 5, 0, 0)
@@ -85,7 +85,7 @@ global_init(void)
     char if_name[RTE_ETH_NAME_MAX_LEN];
 
     const char* original_key_file =
-            "/root/ssl_offload/dpdk-19.05/examples/offload_ssl/cert/my_cert.pem";
+            "/root/SmartTLS/smartnic/offload_ssl/cert/my_cert.pem";
     const char* original_key_passwd = "1234";
 
     static uint8_t key[] = {

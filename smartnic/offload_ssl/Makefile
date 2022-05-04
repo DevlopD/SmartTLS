@@ -5,7 +5,8 @@
 APP = ssloff
 
 # all source are stored in SRCS-y
-SRCS-y := main.c tcp.c dpdk_io.c ssl.c cert.c ssl_crypto.c host.c pka_helper.c fhash.c
+# SRCS-y := main.c tcp.c dpdk_io.c ssl.c cert.c ssl_crypto.c host.c pka_helper.c fhash.c
+SRCS-y := main.c tcp.c dpdk_io.c ssl.c cert.c ssl_crypto.c host.c pka_helper.c fhash.c tc_rule/tc.c tc_rule/netlink-socket.c tc_rule/netlink.c tc_rule/ofpbuf.c
 
 # Build using pkg-config variables if possible
 $(shell pkg-config --exists libdpdk)
@@ -20,6 +21,7 @@ static: build/$(APP)-static
 
 PC_FILE := $(shell pkg-config --path libdpdk)
 CFLAGS += -O3 $(shell pkg-config --cflags libdpdk)
+
 LDFLAGS_SHARED = $(shell pkg-config --libs libdpdk)
 LDFLAGS_STATIC = -Wl,-Bstatic $(shell pkg-config --static --libs libdpdk)
 
@@ -56,12 +58,20 @@ ifeq ($(CONFIG_RTE_TOOLCHAIN_GCC),y)
 CFLAGS_main.o += -Wno-return-type
 endif
 
-PKA_DIRECTORY = /root/ssl_offload/pkalib-1.0
+PKA_DIRECTORY = /root/pkalib-1.0
 
 PKA_INC = -I$(PKA_DIRECTORY)/lib -I$(PKA_DIRECTORY)/include -I./helper
+TC_RULE_INC = -I/root/SmartTLS/smartnic/offload_ssl/tc_rule/include
+
 
 #EXTRA_CFLAGS += -O3 -g -Wfatal-errors -lgmp
-EXTRA_CFLAGS += -O3 -g -lgmp -lssl -lcrypto -lPKA -DGNU_SOURCE ${PKA_INC}
+
+# Added PKA
+# EXTRA_CFLAGS += -std=gnu99 -O3 -g -lgmp -lssl -lcrypto -lPKA -DGNU_SOURCE ${PKA_INC} ${TC_RULE_INC}
+
+# Added PKA and TC_RULE
+EXTRA_CFLAGS += -std=gnu99 -DHAVE_NETLINK -O3 -g -lgmp -lssl -lcrypto \
+				-lPKA -DGNU_SOURCE ${PKA_INC} ${TC_RULE_INC}
 
 include $(RTE_SDK)/mk/rte.extapp.mk
 endif

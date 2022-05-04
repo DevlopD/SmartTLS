@@ -145,10 +145,10 @@ encrypt_aes_gcm(EVP_CIPHER_CTX *ctx, unsigned char *plaintext, int plaintext_len
 #endif
 
     /* Initialise the encryption operation. */
-#if MODIFY_FLAG
-    if(!(ctx = EVP_CIPHER_CTX_new()))
-        handleErrors();
-#endif
+/* #if MODIFY_FLAG */
+/*     if(!(ctx = EVP_CIPHER_CTX_new())) */
+/*         handleErrors(); */
+/* #endif */
 
     if(1 != EVP_EncryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, NULL, NULL))
         handleErrors();
@@ -219,9 +219,9 @@ encrypt_aes_gcm(EVP_CIPHER_CTX *ctx, unsigned char *plaintext, int plaintext_len
     fprintf(stderr, "\n");
 #endif
 
-#if MODIFY_FLAG
-    EVP_CIPHER_CTX_free(ctx);
-#endif
+/* #if MODIFY_FLAG */
+/*     EVP_CIPHER_CTX_free(ctx); */
+/* #endif */
 
     return ciphertext_len;
 }
@@ -262,10 +262,10 @@ decrypt_aes_gcm(EVP_CIPHER_CTX *ctx, unsigned char *ciphertext, int ciphertext_l
 #endif
 
     /* Initialise the decryption operation. */
-#if MODIFY_FLAG
-    if(!(ctx = EVP_CIPHER_CTX_new()))
-        handleErrors();
-#endif
+/* #if MODIFY_FLAG */
+/*     if(!(ctx = EVP_CIPHER_CTX_new())) */
+/*         handleErrors(); */
+/* #endif */
 
     if(!EVP_DecryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, NULL, NULL))
         handleErrors();
@@ -310,9 +310,9 @@ decrypt_aes_gcm(EVP_CIPHER_CTX *ctx, unsigned char *ciphertext, int ciphertext_l
     fprintf(stderr, "\n");
 #endif
 
-#if MODIFY_FLAG
-    EVP_CIPHER_CTX_free(ctx);
-#endif
+/* #if MODIFY_FLAG */
+/*     EVP_CIPHER_CTX_free(ctx); */
+/* #endif */
 
     if(ret > 0) {
         /* Success */

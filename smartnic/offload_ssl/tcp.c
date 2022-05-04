@@ -5,6 +5,10 @@
 #include "fhash.h"
 #endif	/* USE_HASHTABLE_FOR_ACTIVE_SESSION */
 
+#if USE_TC_RULE
+#include "tc.h"
+#endif
+
 #define B_TO_Mb(x) ((x) * 8 / 1000 / 1000)
 
 #define TCP_SEQ_LT(a,b)         ((int32_t)((a)-(b)) < 0)
@@ -15,14 +19,22 @@
 
 #define ISN 1234
 /* for RSA 2048 bit */
-/* #define UPPER_BOUND 150 */
-/* #define LOWER_BOUND 145 */
+#define UPPER_BOUND 300
+#define LOWER_BOUND 290
 /* for RSA 2048 bit with static tc rule */
-#define UPPER_BOUND 80
-#define LOWER_BOUND 78
+/* #define UPPER_BOUND 80 */
+/* #define LOWER_BOUND 78 */
 /* for RSA 4096 bit */
 /* #define UPPER_BOUND 35 */
 /* #define LOWER_BOUND 32 */
+
+#if USE_TC_RULE
+#define INTERFACE_TO_NETWORK "p0"
+#define INTERFACE_TO_HOST    "ph0hpf"
+#define TC_HANDLE            1
+#define IFX_NETWORK          (if_nametoindex(INTERFACE_TO_NETWORK))
+#define IFX_host             (if_nametoindex(INTERFACE_TO_HOST))
+#endif	/* USE_TC_RULE */
 
 int test_flag = 1;
 
@@ -31,7 +43,7 @@ int test_flag = 1;
 
 #if ONLOAD
 static inline int
-is_overloaded(struct thread_context *ctx, struct ether_hdr *ethh);
+is_overloaded(struct thread_context *ctx, struct rte_ether_hdr *ethh);
 #endif /* ONLOAD */
 
 static inline void
@@ -114,17 +126,17 @@ get_cookie(uint32_t client_ip, uint16_t client_port,
 
 #if ONLOAD
 static inline int
-is_overloaded(struct thread_context *ctx, struct ether_hdr *ethh)
+is_overloaded(struct thread_context *ctx, struct rte_ether_hdr *ethh)
 {
 #if !NO_TLS
-    struct ipv4_hdr *iph;
-    struct tcp_hdr *tcph;
+    struct rte_ipv4_hdr *iph;
+    struct rte_tcp_hdr *tcph;
     int ret = 0;
     int waiting_op = 0;
     int i;
 
-    iph = (struct ipv4_hdr *)(ethh + 1);
-    tcph = (struct tcp_hdr *)(iph + 1);
+    iph = (struct rte_ipv4_hdr *)(ethh + 1);
+    tcph = (struct rte_tcp_hdr *)(iph + 1);
     for (i = 0; i < MAX_CPUS; i++) {
         if (ctx_array[i])
             waiting_op += ctx_array[i]->using_op_cnt;
@@ -184,6 +196,16 @@ clear_tcp_session(struct tcp_session *tcp)
     tcp->last_sent_seq = 0;
     tcp->last_sent_ack = 0;
     tcp->last_sent_len = 0;
+
+#if OFFLOAD_AES_GCM
+	tcp->next_sent_seq = 0;
+#endif
+
+#if USE_TC_RULE
+	memset(&tcp->tc_obj, 0, sizeof(struct tc_flower));
+	memset(&tcp->tc_rev_obj, 0, sizeof(struct tc_flower));
+	tcp->tc_prio = 0;
+#endif
 }
 
 static inline void
@@ -242,6 +264,13 @@ clear_ssl_session(struct ssl_session *ssl)
         cur = next;
     }
 
+#if OFFLOAD_AES_GCM
+	if (ssl->tls_ctx.aead_key.key) {
+		rte_eth_tls_device_free(ssl->parent->portid, &ssl->tls_ctx);
+		memset(&ssl->tls_ctx, 0, sizeof(ssl->tls_ctx));
+	}
+#endif	/* OFFLOAD_AES_GCM */
+
     ssl->num_current_records = 0;
     ssl->recv_q_cnt = 0;
 
@@ -260,6 +289,9 @@ thread_local_init(int core_id)
     int i, j;
 
     nb_ports = rte_eth_dev_count_avail();
+
+	DEBUG_PRINT("[thread local init] [core %d] local_max_conn: %u\n",
+				core_id, local_max_conn);
 
     /* Allocate memory for thread context */
     ctx_array[core_id] = calloc(1, sizeof(struct thread_context));
@@ -284,6 +316,10 @@ thread_local_init(int core_id)
 
     /* Assign packet mbuf pool to dpdk private context */
     dpc->pktmbuf_pool = pktmbuf_pool[core_id];
+
+	/* debug */
+	fprintf(stderr, "nb_ports: %u, total_port: %u\n", 
+			nb_ports, rte_eth_dev_count_total());
 
     for (j = 0; j < nb_ports; j++) {
         /* Allocate wmbufs for each registered port */
@@ -613,6 +649,8 @@ thread_local_destroy(int core_id)
 static inline void
 remove_session(struct ssl_session* sess)
 {
+	/* DEBUG_PRINT("[remove_session] [core %u]\n", rte_lcore_id()); */
+
     struct thread_context *ctx = ctx_array[sess->coreid];
 
     assert(ctx->active_cnt > 0);
@@ -640,7 +678,7 @@ abort_session(struct ssl_session* sess)
     if (unlikely(0 > send_tcp_packet(sess->parent,
 									 NULL,
 									 0,
-									 TCP_FLAG_RST | TCP_FLAG_ACK))) {
+									 TCP_FLAG_RST | TCP_FLAG_ACK, 0))) {
         fprintf(stderr, "sending reset packet error!\n");
         return -1;
     }
@@ -654,9 +692,9 @@ static inline int
 send_synack_packet(uint16_t core_id, uint16_t port,
                    uint8_t *pktbuf, uint32_t cookie)
 {
-    struct ether_hdr *ethh = (struct ether_hdr *)pktbuf;
-    struct ipv4_hdr *iph = (struct ipv4_hdr *)(ethh + 1);
-    struct tcp_hdr *tcph = (struct tcp_hdr *)(iph + 1);
+    struct rte_ether_hdr *ethh = (struct rte_ether_hdr *)pktbuf;
+    struct rte_ipv4_hdr *iph = (struct rte_ipv4_hdr *)(ethh + 1);
+    struct rte_tcp_hdr *tcph = (struct rte_tcp_hdr *)(iph + 1);
 
     uint32_t seq_no = ntohl(tcph->sent_seq);
 
@@ -678,9 +716,9 @@ send_synack_packet(uint16_t core_id, uint16_t port,
         exit(EXIT_FAILURE);
     }
     
-    struct ether_hdr *syn_ethh = (struct ether_hdr *)buf;
-    struct ipv4_hdr *syn_iph = (struct ipv4_hdr *)(syn_ethh + 1);
-    struct tcp_hdr *syn_tcph = (struct tcp_hdr *)(syn_iph + 1);
+    struct rte_ether_hdr *syn_ethh = (struct rte_ether_hdr *)buf;
+    struct rte_ipv4_hdr *syn_iph = (struct rte_ipv4_hdr *)(syn_ethh + 1);
+    struct rte_tcp_hdr *syn_tcph = (struct rte_tcp_hdr *)(syn_iph + 1);
 
     uint8_t *syn_option;
 #if VERBOSE_TCP
@@ -781,9 +819,9 @@ send_meta_packet(int coreid, int port, struct tcp_session *sess,
 				 uint8_t* payload, uint16_t payload_len) {
 
     uint8_t *buf;
-    struct ether_hdr *ethh;
-    struct ipv4_hdr *iph;
-    struct tcp_hdr *tcph;
+    struct rte_ether_hdr *ethh;
+    struct rte_ipv4_hdr *iph;
+    struct rte_tcp_hdr *tcph;
 #if VERBOSE_TCP
     char dst_hw[20];
     char src_hw[20];
@@ -794,7 +832,7 @@ send_meta_packet(int coreid, int port, struct tcp_session *sess,
     buf = get_wptr(coreid, port, TOTAL_HEADER_LEN + payload_len);
     assert(buf != NULL);
 
-    ethh = (struct ether_hdr *)buf;
+    ethh = (struct rte_ether_hdr *)buf;
 
     int i;
     for (i = 0; i < 6; i++) {
@@ -802,9 +840,9 @@ send_meta_packet(int coreid, int port, struct tcp_session *sess,
         ethh->s_addr.addr_bytes[i] = sess->client_mac[i];
     }
 
-    ethh->ether_type = rte_cpu_to_be_16(ETHER_TYPE_IPv4);
+    ethh->ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4);
 
-    iph = (struct ipv4_hdr *)(ethh + 1);
+    iph = (struct rte_ipv4_hdr *)(ethh + 1);
     iph->version_ihl = 69;
     iph->type_of_service = 0xff;
     iph->total_length = htons(IP_HEADER_LEN + TCP_HEADER_LEN + payload_len);
@@ -817,7 +855,7 @@ send_meta_packet(int coreid, int port, struct tcp_session *sess,
     iph->hdr_checksum = 0;
     iph->hdr_checksum = rte_ipv4_cksum(iph);
 
-    tcph = (struct tcp_hdr *)(iph + 1);
+    tcph = (struct rte_tcp_hdr *)(iph + 1);
 
     tcph->src_port = sess->client_port;
     tcph->dst_port = sess->server_port;
@@ -889,9 +927,9 @@ send_raw_reset(int coreid, int portid,
 {
     int i;
     uint8_t *buf;
-    struct ether_hdr *ethh;
-    struct ipv4_hdr *iph;
-    struct tcp_hdr *tcph;
+    struct rte_ether_hdr *ethh;
+    struct rte_ipv4_hdr *iph;
+    struct rte_tcp_hdr *tcph;
 #if VERBOSE_TCP
     char dst_hw[20];
     char src_hw[20];
@@ -900,14 +938,14 @@ send_raw_reset(int coreid, int portid,
     buf = get_wptr(coreid, portid, TOTAL_HEADER_LEN);
     assert(buf != NULL);
 
-    ethh = (struct ether_hdr *)buf;
+    ethh = (struct rte_ether_hdr *)buf;
     for (i = 0; i < 6; i++) {
         ethh->d_addr.addr_bytes[i] = hw_dst[i];
         ethh->s_addr.addr_bytes[i] = hw_src[i];
     }
-    ethh->ether_type = rte_cpu_to_be_16(ETHER_TYPE_IPv4);
+    ethh->ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4);
 
-    iph = (struct ipv4_hdr *)(ethh + 1);
+    iph = (struct rte_ipv4_hdr *)(ethh + 1);
     iph->version_ihl = 69;
     iph->type_of_service = 0;
     iph->total_length = htons(IP_HEADER_LEN + TCP_HEADER_LEN);
@@ -920,7 +958,7 @@ send_raw_reset(int coreid, int portid,
     iph->hdr_checksum = 0;
     iph->hdr_checksum = rte_ipv4_cksum(iph);
 
-    tcph = (struct tcp_hdr *)(iph + 1);
+    tcph = (struct rte_tcp_hdr *)(iph + 1);
 
     tcph->src_port = tcp_src;
     tcph->dst_port = tcp_dst;
@@ -971,18 +1009,18 @@ send_raw_reset(int coreid, int portid,
     return 0;
 }
 
-
 inline int
 send_tcp_packet(struct tcp_session* sess,
                 uint8_t* payload,
                 uint16_t payload_len,
-                uint8_t flags) {
+                uint8_t flags,
+				uint8_t offl_flag) {
 
     int i;
     uint8_t *buf;
-    struct ether_hdr *ethh;
-    struct ipv4_hdr *iph;
-    struct tcp_hdr *tcph;
+    struct rte_ether_hdr *ethh;
+    struct rte_ipv4_hdr *iph;
+    struct rte_tcp_hdr *tcph;
 #if VERBOSE_TCP
     char send_dst_hw[20];
     char send_src_hw[20];
@@ -995,17 +1033,42 @@ send_tcp_packet(struct tcp_session* sess,
 	do {
 		byte_to_send = MIN(left_to_send, MAX_PKT_SIZE - IP_HEADER_LEN - TCP_HEADER_LEN);
 
+#if OFFLOAD_AES_GCM
+		if (offl_flag & TCP_OFFL_TLS_AES) {
+			struct rte_mbuf *mbuf;
+
+			if (byte_to_send != left_to_send) {
+				fprintf(stderr, "error: can't process TLS AES offl!\n");
+				exit(EXIT_FAILURE);
+			}
+
+			mbuf = get_wmbuf(sess->coreid, sess->portid,
+							 TOTAL_HEADER_LEN + byte_to_send);
+			mbuf->l2_len = ETHERNET_HEADER_LEN;
+			mbuf->l3_len = IP_HEADER_LEN;
+			mbuf->l4_len = TCP_HEADER_LEN;
+			mbuf->tso_segsz = MAX_PKT_SIZE -
+				(mbuf->l3_len + mbuf->l4_len);
+
+			mbuf->tls_ctx = &sess->ssl_session->tls_ctx;
+			buf = rte_pktmbuf_mtod(mbuf, uint8_t *);
+		} else {
+			buf = get_wptr(sess->coreid, sess->portid,
+						   TOTAL_HEADER_LEN + byte_to_send);
+		}
+#else
 		buf = get_wptr(sess->coreid, sess->portid, TOTAL_HEADER_LEN + byte_to_send);
+#endif
 		assert(buf != NULL);
 
-		ethh = (struct ether_hdr *)buf;
+		ethh = (struct rte_ether_hdr *)buf;
 		for (i = 0; i < 6; i++) {
 			ethh->d_addr.addr_bytes[i] = sess->client_mac[i];
 			ethh->s_addr.addr_bytes[i] = sess->server_mac[i];
 		}
-		ethh->ether_type = rte_cpu_to_be_16(ETHER_TYPE_IPv4);
+		ethh->ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4);
 
-		iph = (struct ipv4_hdr *)(ethh + 1);
+		iph = (struct rte_ipv4_hdr *)(ethh + 1);
 		iph->version_ihl = 69;
 		iph->type_of_service = 0;
 		iph->total_length = htons(IP_HEADER_LEN + TCP_HEADER_LEN + byte_to_send);
@@ -1018,7 +1081,7 @@ send_tcp_packet(struct tcp_session* sess,
 		iph->hdr_checksum = 0;
 		iph->hdr_checksum = rte_ipv4_cksum(iph);
 
-		tcph = (struct tcp_hdr *)(iph + 1);
+		tcph = (struct rte_tcp_hdr *)(iph + 1);
 
 		tcph->src_port = sess->server_port;
 		tcph->dst_port = sess->client_port;
@@ -1026,7 +1089,12 @@ send_tcp_packet(struct tcp_session* sess,
 
 		/* Now the tcp session should be always "TCP_SESSION_RECEIVED" */
 		tcph->recv_ack = htonl(sess->last_recv_seq + sess->last_recv_len);
+#if OFFLOAD_AES_GCM
+		tcph->sent_seq = htonl(MAX(sess->last_recv_ack, sess->next_sent_seq) +
+							   already_to_send);
+#else
 		tcph->sent_seq = htonl(sess->last_recv_ack + already_to_send);
+#endif
 
 		sess->last_sent_seq = ntohl(tcph->sent_seq);
 		sess->last_sent_ack = ntohl(tcph->recv_ack);
@@ -1096,6 +1164,10 @@ send_tcp_packet(struct tcp_session* sess,
 		already_to_send += byte_to_send;
 
 	} while(left_to_send > 0);
+
+#if OFFLOAD_AES_GCM
+	sess->next_sent_seq = sess->last_recv_ack + payload_len;
+#endif
 
     return 0;
 }
@@ -1301,20 +1373,20 @@ send_init_meta(uint16_t core_id, uint16_t port)
 static inline int
 validate_packet_type(uint16_t port, uint8_t *pktbuf)
 {
-    struct ether_hdr *ethh;
-    struct ipv4_hdr *iph;
-    struct tcp_hdr *tcph;
+    struct rte_ether_hdr *ethh;
+    struct rte_ipv4_hdr *iph;
+    struct rte_tcp_hdr *tcph;
 
-    ethh = (struct ether_hdr *)pktbuf;
+    ethh = (struct rte_ether_hdr *)pktbuf;
 
     if (ethh->ether_type == rte_cpu_to_be_16(ETHER_TYPE_META))
         return TRUE;
 
-    if (ethh->ether_type == rte_cpu_to_be_16(ETHER_TYPE_IPv4)) {
-        iph = (struct ipv4_hdr *)(ethh + 1);
+    if (ethh->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4)) {
+        iph = (struct rte_ipv4_hdr *)(ethh + 1);
         if (iph->next_proto_id == IPPROTO_TCP) {
             /* The packet is a TCP packet */
-            tcph = (struct tcp_hdr *)(iph + 1);
+            tcph = (struct rte_tcp_hdr *)(iph + 1);
             if (port % 2 == 0) {
                 if (tcph->dst_port != htons(SSL_PORT)) {
 #if VERBOSE_TCP
@@ -1353,9 +1425,9 @@ process_host_packet(uint16_t core_id, uint16_t port, struct thread_context *ctx,
 {
     uint8_t *buf;
     struct tcp_session *target;
-    struct ether_hdr *ethh = (struct ether_hdr *)pktbuf;
-    struct ipv4_hdr *iph = (struct ipv4_hdr *)(ethh + 1);
-    struct tcp_hdr *tcph = (struct tcp_hdr *)(iph + 1);
+    struct rte_ether_hdr *ethh = (struct rte_ether_hdr *)pktbuf;
+    struct rte_ipv4_hdr *iph = (struct rte_ipv4_hdr *)(ethh + 1);
+    struct rte_tcp_hdr *tcph = (struct rte_tcp_hdr *)(iph + 1);
 
     /* Check if the packet is from host */
     if(!(port % 2))
@@ -1370,6 +1442,17 @@ process_host_packet(uint16_t core_id, uint16_t port, struct thread_context *ctx,
                                     iph->dst_addr, tcph->dst_port, 
                                     iph->src_addr, tcph->src_port);
         if (target) {
+#if USE_TC_RULE
+			if (target->tc_prio != 0) {
+				tc_del_filter(IFX_NETWORK, target->tc_prio, TC_HANDLE);
+				tc_del_filter(IFX_HOST, target->tc_prio, TC_HANDLE);
+				target->ctx->tc_rule_cnt--;
+
+				/* debug */
+				fprintf(stderr, "[install tc rule] delete tc rule %u!\n", 
+						target->tc_prio);
+			}
+#endif
             remove_session(target->ssl_session);
 #if VERBOSE_TCP
 			fprintf(stderr, "len = %d\n", len);
@@ -1383,6 +1466,56 @@ process_host_packet(uint16_t core_id, uint16_t port, struct thread_context *ctx,
 			return 0;
 		}
     }
+
+#if USE_TC_RULE
+	if (iph->type_of_service == 0xfe) {
+        target = search_tcp_session(ctx,
+                                    iph->dst_addr, tcph->dst_port, 
+                                    iph->src_addr, tcph->src_port);
+		if (!target) {
+			fprintf(stderr, "[install tc rule] no session match!\n");
+			return 0;
+		}
+
+		/* fill tc rule obj and install */
+		uint16_t prio = ++target->ctx->tc_rule_cnt;
+		uint32_t ifx_network, ifx_host;
+
+		target->tc_prio = prio;
+
+		target->tc_obj.handle = TC_HANDLE;
+		target->tc_obj.prio = prio;
+		target->tc_obj.key.eth_type = htons(ETH_P_IP);
+		target->tc_obj.key.ip_proto = IPPROTO_TCP;
+		target->tc_obj.mask.ip_proto = 0xff;
+		target->tc_obj.key.ipv4.ipv4_src = iph->dst_addr;
+		target->tc_obj.mask.ipv4.ipv4_src = 0xffffffff;
+		target->tc_obj.key.tcp_src = tcph->dst_port;
+		target->tc_obj.mask.tcp_src = 0xffff;
+		target->tc_obj.ifindex_out = IFX_HOST;
+
+		target->tc_rev_obj.handle = TC_HANDLE;
+		target->tc_rev_obj.prio = prio;
+		target->tc_rev_obj.key.eth_type = htons(ETH_P_IP);
+		target->tc_rev_obj.key.ip_proto = IPPROTO_TCP;
+		target->tc_rev_obj.mask.ip_proto = 0xff;
+		target->tc_rev_obj.key.ipv4.ipv4_dst = iph->src_addr;
+		target->tc_rev_obj.mask.ipv4.ipv4_dst = 0xffffffff;
+		target->tc_rev_obj.key.tcp_dst = tcph->src_port;
+		target->tc_rev_obj.mask.tcp_dst = 0xffff;
+		target->tc_rev_obj.ifindex_out = IFX_NETWORK;
+
+		tc_replace_flower(IFX_NETWORK, prio, TC_HANDLE, &target->tc_obj);
+		tc_replace_flower(IFX_HOST, prio, TC_HANDLE, &target->tc_rev_obj);
+
+		/* debug */
+		fprintf(stderr, "[install tc rule] install new tc rule %u!\n",
+				taret->tc_prio);
+
+		return 0;
+	}
+#endif	/* USE_TC_RULE */
+
 
     /* Forward to corresponding network interface */
     buf = get_wptr(core_id, port - 1, len);
@@ -1406,9 +1539,9 @@ process_fin_packet(uint16_t core_id, uint16_t port,
     struct tcp_session *target;
     int ret = FALSE;
 
-    struct ether_hdr *ethh = (struct ether_hdr *)pktbuf;
-    struct ipv4_hdr *iph = (struct ipv4_hdr *)(ethh + 1);
-    struct tcp_hdr *tcph = (struct tcp_hdr *)(iph + 1);
+    struct rte_ether_hdr *ethh = (struct rte_ether_hdr *)pktbuf;
+    struct rte_ipv4_hdr *iph = (struct rte_ipv4_hdr *)(ethh + 1);
+    struct rte_tcp_hdr *tcph = (struct rte_tcp_hdr *)(iph + 1);
 
     uint32_t seq_no = ntohl(tcph->sent_seq);
     uint32_t ack_no = ntohl(tcph->recv_ack);
@@ -1460,13 +1593,16 @@ process_rst_packet(uint16_t core_id, uint16_t port,
     struct tcp_session *target;
     int ret = FALSE;
 
-    struct ether_hdr *ethh = (struct ether_hdr *)pktbuf;
-    struct ipv4_hdr *iph = (struct ipv4_hdr *)(ethh + 1);
-    struct tcp_hdr *tcph = (struct tcp_hdr *)(iph + 1);
+    struct rte_ether_hdr *ethh = (struct rte_ether_hdr *)pktbuf;
+    struct rte_ipv4_hdr *iph = (struct rte_ipv4_hdr *)(ethh + 1);
+    struct rte_tcp_hdr *tcph = (struct rte_tcp_hdr *)(iph + 1);
 
     uint32_t seq_no = ntohl(tcph->sent_seq);
     uint32_t ack_no = ntohl(tcph->recv_ack);
     uint8_t *buf;
+
+	/* DEBUG_PRINT("rst from %x:%u\n", */
+	/* 			htonl(iph->src_addr), htons(tcph->src_port)); */
 
     target = search_tcp_session(ctx,
                                 iph->src_addr, tcph->src_port, 
@@ -1481,7 +1617,7 @@ process_rst_packet(uint16_t core_id, uint16_t port,
 		} else {	
 			/* Remove session info and send reset to network side */
 			remove_session(target->ssl_session);
-			send_raw_reset(core_id, port + 1,
+			send_raw_reset(core_id, port,
 						   ethh->s_addr.addr_bytes, ethh->d_addr.addr_bytes,
 						   iph->src_addr, iph->dst_addr,
 						   tcph->src_port, tcph->dst_port,
@@ -1490,7 +1626,7 @@ process_rst_packet(uint16_t core_id, uint16_t port,
 		}
     } else {
         /* just send reset to network side */
-		send_raw_reset(core_id, port + 1,
+		send_raw_reset(core_id, port,
 					   ethh->s_addr.addr_bytes, ethh->d_addr.addr_bytes,
 					   iph->src_addr, iph->dst_addr,
 					   tcph->src_port, tcph->dst_port,
@@ -1504,10 +1640,10 @@ static inline void
 process_packet(uint16_t core_id, uint16_t port, uint8_t *pktbuf, int len)
 {
     uint8_t* buf;
-    struct ether_hdr *ethh;
-    struct ipv4_hdr *iph;
+    struct rte_ether_hdr *ethh;
+    struct rte_ipv4_hdr *iph;
     uint16_t ip_len;
-    struct tcp_hdr *tcph;
+    struct rte_tcp_hdr *tcph;
     uint8_t *option;
     uint16_t option_len;
     uint8_t *payload;
@@ -1530,7 +1666,7 @@ process_packet(uint16_t core_id, uint16_t port, uint8_t *pktbuf, int len)
     if (!validate_packet_type(port, pktbuf))
         return;
 
-    ethh = (struct ether_hdr *)pktbuf;
+    ethh = (struct rte_ether_hdr *)pktbuf;
 
     /* Process initialization metadata packet.
      * This packet includes host key and host iv. */
@@ -1554,11 +1690,11 @@ process_packet(uint16_t core_id, uint16_t port, uint8_t *pktbuf, int len)
     UNUSED(len);
 #endif /* !ONLOAD */
 
-    iph = (struct ipv4_hdr *)(ethh + 1);
+    iph = (struct rte_ipv4_hdr *)(ethh + 1);
 
     ip_len = ntohs(iph->total_length);
 
-    tcph = (struct tcp_hdr *)(iph + 1);
+    tcph = (struct rte_tcp_hdr *)(iph + 1);
     seq_no = ntohl(tcph->sent_seq);
     ack_no = ntohl(tcph->recv_ack);
 
@@ -1591,13 +1727,13 @@ process_packet(uint16_t core_id, uint16_t port, uint8_t *pktbuf, int len)
             ethh->s_addr.addr_bytes[5]);
 
     fprintf(stderr, "\nPacket Receive Info---------------------------------\n"
-			"core: %d\n"
+			"core: %d, port: %u\n"
 			"dest hwaddr: %s\n"
 			"source hwaddr: %s\n"
 			"%x : %u -> %x : %u\n"
 			"seq: %u, ack: %u, flag: %x\n"
 			"len: %u, option_len: %u, payload_len: %u\n\n",
-			core_id, recv_dst_hw, recv_src_hw,
+			core_id, port, recv_dst_hw, recv_src_hw,
 			ntohl(iph->src_addr), ntohs(tcph->src_port),
 			ntohl(iph->dst_addr), ntohs(tcph->dst_port),
 			seq_no, ack_no, tcph->tcp_flags,
@@ -1677,7 +1813,7 @@ process_packet(uint16_t core_id, uint16_t port, uint8_t *pktbuf, int len)
 #endif /* ONLOAD */
 
             /* Record the time of last response */
-	    /* ToDo: replace it to clock_gettime */
+			/* ToDo: replace it to clock_gettime */
             gettimeofday(&result->last_interaction, NULL);
 
             return;
@@ -1800,7 +1936,7 @@ process_packet(uint16_t core_id, uint16_t port, uint8_t *pktbuf, int len)
 					ret = send_tcp_packet(result,
 										  NULL,
 										  0,
-										  TCP_FLAG_ACK);
+										  TCP_FLAG_ACK, 0);
 					if (unlikely(ret < 0)) {
 						fprintf(stderr, "Sending ACK Failed.\n");
 						exit(EXIT_FAILURE);
@@ -1813,7 +1949,7 @@ process_packet(uint16_t core_id, uint16_t port, uint8_t *pktbuf, int len)
 					ret = send_tcp_packet(result,
 										  NULL,
 										  0,
-										  TCP_FLAG_ACK);
+										  TCP_FLAG_ACK, 0);
 					if (unlikely(ret < 0)) {
 						fprintf(stderr, "Sending ACK Failed.\n");
 						exit(EXIT_FAILURE);
@@ -1843,7 +1979,7 @@ process_packet(uint16_t core_id, uint16_t port, uint8_t *pktbuf, int len)
                     ret = send_tcp_packet(result,
                                           NULL,
                                           0,
-                                          TCP_FLAG_ACK);
+                                          TCP_FLAG_ACK, 0);
                     if (unlikely(ret < 0)) {
                         fprintf(stderr, "Sending ACK Failed.\n");
                         exit(EXIT_FAILURE);
@@ -1902,7 +2038,7 @@ process_session_health_check(struct tcp_session *sess)
         ret = send_tcp_packet(sess,
                               NULL,
                               0,
-                              TCP_FLAG_ACK);
+                              TCP_FLAG_ACK, 0);
         if (unlikely(ret < 0)) {
             fprintf(stderr, "Sending RST Failed.\n");
             exit(EXIT_FAILURE);
@@ -2194,6 +2330,7 @@ ssloff_main_loop(__attribute__((unused)) void *arg)
 			UNUSED(processed_cnt);
 #endif /* !VERBOSE_TCP */
 
+/* #if !MODIFY_FLAG */
 #if USE_HASHTABLE_FOR_ACTIVE_SESSION
 			for (i = 0; i < NUM_BINS; i++) {
 				struct hashtable *ht = ctx->active_session_table;
@@ -2209,7 +2346,7 @@ ssloff_main_loop(__attribute__((unused)) void *arg)
 				process_session_health_check(target);
 			}
 #endif /* !USE_HASHTABLE_FOR_ACTIVE_SESSION */
-
+/* #endif /\* !MODIFY_FLAG *\/ */
 			/* Send Packets */
 			send_cnt = send_pkts(core_id, port);
 #if VERBOSE_TCP

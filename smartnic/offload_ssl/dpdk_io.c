@@ -64,6 +64,47 @@ get_rptr(uint16_t core_id, uint16_t port, int index, uint16_t *len) {
     return pktbuf;
 }
 
+#if OFFLOAD_AES_GCM
+inline struct rte_mbuf *
+get_wmbuf(uint16_t core_id, uint16_t port, uint16_t pktsize) {
+    struct dpdk_private_context *dpc;
+    struct rte_mbuf *m;
+    int len_mbuf;
+    int send_cnt;
+    struct ssl_stat *stat = &ctx_array[core_id]->stat;
+
+    dpc = ctx_array[core_id]->dpc;
+
+    if (unlikely(dpc->wmbufs[port].len == MAX_PKT_BURST)) {
+        while(1) {
+            send_cnt = send_pkts(core_id, port);
+            if (likely(send_cnt))
+                break;
+        }
+    }
+
+    /* sanity check */
+    len_mbuf = dpc->wmbufs[port].len;
+    m = dpc->wmbufs[port].m_table[len_mbuf];
+
+    m->pkt_len = m->data_len = pktsize;
+    m->nb_segs = 1;
+    m->next = NULL;
+#if OFFLOAD_AES_GCM
+	m->tls_ctx = NULL;
+#endif
+
+	m->ol_flags = PKT_TX_IPV4 | PKT_TX_IP_CKSUM |
+		PKT_TX_TCP_CKSUM;
+
+    dpc->wmbufs[port].len = len_mbuf + 1;
+
+    stat->tx_bytes[port] += pktsize;
+
+    return m;
+}
+#endif	/* OFFLOAD_AES_GCM */
+
 inline uint8_t *
 get_wptr(uint16_t core_id, uint16_t port, uint16_t pktsize) {
     struct dpdk_private_context *dpc;
@@ -87,10 +128,13 @@ get_wptr(uint16_t core_id, uint16_t port, uint16_t pktsize) {
     len_mbuf = dpc->wmbufs[port].len;
     m = dpc->wmbufs[port].m_table[len_mbuf];
 
-    ptr = (void *)rte_pktmbuf_mtod(m, struct ether_hdr *);
+    ptr = (void *)rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
     m->pkt_len = m->data_len = pktsize;
     m->nb_segs = 1;
     m->next = NULL;
+#if OFFLOAD_AES_GCM
+	m->tls_ctx = NULL;
+#endif
 
     dpc->wmbufs[port].len = len_mbuf + 1;
 

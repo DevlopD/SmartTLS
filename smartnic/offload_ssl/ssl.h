@@ -104,27 +104,27 @@ typedef struct uint24 {
     uint8_t u8[3];
 } uint24_t;
 
-inline void
-set_u32(uint24_t* a, const uint32_t* b)
-{
-    const uint8_t* y = (const uint8_t *)b;
-    a->u8[0] = y[2];
-    a->u8[1] = y[1];
-    a->u8[2] = y[0];
-}
+/* inline void */
+/* set_u32(uint24_t* a, const uint32_t* b) */
+/* { */
+/*     const uint8_t* y = (const uint8_t *)b; */
+/*     a->u8[0] = y[2]; */
+/*     a->u8[1] = y[1]; */
+/*     a->u8[2] = y[0]; */
+/* } */
 
-inline uint32_t
-get_u32(uint24_t a)
-{
-    uint32_t x;
-    x = a.u8[0];
-    x = x << 8;
-    x |= a.u8[1];
-    x = x << 8;
-    x |= a.u8[2];
+/* inline uint32_t */
+/* get_u32(uint24_t a) */
+/* { */
+/*     uint32_t x; */
+/*     x = a.u8[0]; */
+/*     x = x << 8; */
+/*     x |= a.u8[1]; */
+/*     x = x << 8; */
+/*     x |= a.u8[2]; */
 
-    return x;
-}
+/*     return x; */
+/* } */
 
 typedef uint64_t sequence_num_t;
 
@@ -143,6 +143,7 @@ typedef struct cipher_suite {
 
 static const cipher_suite_t TLS_RSA_WITH_AES_128_CBC_SHA = {{0x00, 0x2f}};
 static const cipher_suite_t TLS_RSA_WITH_AES_256_CBC_SHA = {{0x00, 0x35}};
+static const cipher_suite_t TLS_RSA_WITH_AES_128_GCM_SHA256 = {{0x00, 0x9c}};
 static const cipher_suite_t TLS_RSA_WITH_AES_256_GCM_SHA384 = {{0x00, 0x9d}};
 static const cipher_suite_t TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384 = {{0xc0, 0x30}};
 static const cipher_suite_t TLS_NULL_WITH_NULL_NULL = {{0x00, 0x00}};
@@ -340,10 +341,10 @@ typedef struct record {
     TAILQ_ENTRY(record) record_trace_link;
 } record_t;
 
-inline uint8_t*
-get_mac_out(record_t* record)
-{
-    return (record->decrypted + record->plain_text.length + 5);
-}
+/* inline uint8_t* */
+/* get_mac_out(record_t* record) */
+/* { */
+/*     return (record->decrypted + record->plain_text.length + 5); */
+/* } */
 
 #endif /* __SSL_H__ */

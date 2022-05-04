@@ -750,7 +750,6 @@ static int pka_engine_get_handle(pka_engine_info_t *engine)
 
     // Init PK local execution context.
     *handle = pka_init_local(engine->instance);
-    /* /\* debug by duckwoo *\/DEBUG(PKA_D_ERROR, "debug0\n"); */
     return_if_handle_invalid(*handle);
 
     return 1;
@@ -891,7 +890,6 @@ int pka_rsa_mod_exp(pka_bignum_t *bn_value,
     PKA_ASSERT(bn_modulus  != NULL);
     PKA_ASSERT(bn_result   != NULL);
 
-    /* /\* debug by duckwoo *\/DEBUG(PKA_D_ERROR, "debug1\n"); */
     return_if_handle_invalid(tls_handle);
 
     value    = bignum_to_operand(bn_value);
@@ -932,7 +930,6 @@ int pka_rsa_mod_exp_crt(pka_bignum_t  *bn_value,
     PKA_ASSERT(bn_qinv   != NULL);
     PKA_ASSERT(bn_result != NULL);
 
-    /* /\* debug by duckwoo *\/DEBUG(PKA_D_ERROR, "debug2\n"); */
     return_if_handle_invalid(tls_handle);
 
     value = bignum_to_operand(bn_value);
@@ -941,8 +938,6 @@ int pka_rsa_mod_exp_crt(pka_bignum_t  *bn_value,
     d_p   = bignum_to_operand(bn_d_p);
     d_q   = bignum_to_operand(bn_d_q);
     qinv  = bignum_to_operand(bn_qinv);
-
-    /* /\* debug by duckwoo *\/DEBUG(PKA_D_ERROR, "value=%lx\np=%lx\nq=%lx\n\n", value, p, q); */
 
     result = pka_do_mod_exp_crt(tls_handle, value, p, q, d_p, d_q, qinv);
     if (result) {
