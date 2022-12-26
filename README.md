@@ -2,6 +2,12 @@
 
 SmartTLS is a TLS handshake offloading stack, which leverages programmable NIC (a.k.a SmartNIC). Using SmartTLS, host need not be aware of incoming TLS connection and only deal with established ones, while NIC process whole TCP/TLS handshake including session key exchange. SmartTLS has adventage on short-lived connection where handshake process is used to be bottleneck over most cases. It provides synchronous and device-independent API, so that users can reuse their own conventional application with minimal modification.
 
+For more information, please refer following paper:
+https://dl.acm.org/doi/10.1145/3411029.3411034
+
+Also, you can find the evaluation with BlueField-2 SmartNIC here:
+https://www.ndsl.kaist.edu/smarttls/
+
 ## System Requirements
 
 ### Hardware Requirements
